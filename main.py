@@ -4,13 +4,15 @@ from dotenv import load_dotenv
 import os
 import logging
 
+# Variables loaded in .env file for secrecy
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("TESTING_GUILD")
 MY_GUILD = discord.Object(id=GUILD_ID)
 
-class MyClient(commands.Bot):
 
+class MyClient(commands.Bot):
+    """This is the main class of the Discord Bot itself."""
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)

@@ -7,3 +7,7 @@ cogs/__pychache__/
 
 # Virtual environment
 bot-env/
+
+# Local files
+data/
+pyrightconfig.json

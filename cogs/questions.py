@@ -1,0 +1,266 @@
+import discord
+import string
+from discord import app_commands
+from discord.ext import commands
+from pathlib import Path
+import random
+import json
+
+class Prompter(commands.Cog):
+    """This class regisers the 'exam' and 'question' slash commands.
+    It also immediately loads the questions.json and tests.json file on
+    initiation."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.questions: dict[str, dict[str, str | list[list[str | bool]]]] = {}
+        self.tests: dict[str, dict[str, list[str]]] = {}
+        BASE_DIR = Path(__file__).resolve().parent.parent
+        self.questions_file = BASE_DIR / "data" / "questions.json"
+        self.tests_file = BASE_DIR / "data" / "tests.json"
+
+        self.load_tests()
+        self.load_questions()
+
+    def load_questions(self):        
+        try:
+            with open(self.questions_file, "r") as f:
+                self.questions = json.load(f)
+        except:
+            self.questions = {}
+
+    def load_tests(self):
+        try:
+            with open(self.tests_file, "r") as f:
+                self.tests = json.load(f)
+        except:
+            self.tests = {}
+
+    async def get_question(self, subject: str):
+        """This function chooses a random question from a given subject
+        and returns a Question object with shuffled answers. If any problems
+        arise, the function passes an error message string."""
+        # Ensure user entered a valid subject
+        if subject not in self.tests:
+            return None, "Subject not found."
+
+        # Get a random chapter and random question from the given subject
+        current_test = self.tests[subject]
+
+        # This collects only chapters with questions in them
+        valid_chapters = [
+            chapter for chapter, questions in current_test.items()
+            if questions
+        ]
+        if not valid_chapters:
+            return None, "No chapters with questions."
+
+        chapter = random.choice(valid_chapters)
+        question = random.choice(current_test[chapter])
+        if question not in self.questions:
+            return None, "Question UUID missing"
+
+        # Shuffle the answers and get the Question object itself
+        current = self.questions[question]
+
+        answers = current["answers"].copy()
+        random.shuffle(answers)
+        question_obj = Question(
+            str(current['question']),
+            str(current['questionType']),
+            answers,
+            str(current['explanation'])
+        )
+
+        return (chapter, question_obj), None
+
+    @app_commands.command(name="exam", description="Receive a fixed number of questions")
+    @app_commands.describe(subject="Choose a subject", number="The amount of questions")
+    async def exam(
+        self,
+        interaction: discord.Interaction,
+        subject: str,
+        number: int
+    ):
+        """This function holds the '/exam' command. It takes a subject and a number of questions for the
+        user, and continues to ask the user questions after they answer the previous question."""
+        if not 0 < number < 30:
+            await interaction.response.send_message("Only a maximum of 30 questions in a row are supported.")
+            return
+
+        await interaction.response.send_message(f"Starting an exam with {number} questions..")
+
+        for _ in range(number):
+            result, error = await self.get_question(subject)
+
+            if error:
+                await interaction.followup.send(error)
+                return
+
+            chapter, question_obj = result
+
+            # Final presentation of question
+            embed = discord.Embed(
+                color = discord.Color.blue(),
+                title = f"Question: {subject}, {chapter}",
+                description = (
+                    f"{question_obj.prompt}\n\n"
+                    + "\n".join(
+                            f"{string.ascii_uppercase[i]}. {choice_text}"
+                            for i, (choice_text, _) in enumerate(question_obj.answers)
+                        )
+                )
+            )
+            view = QuizView(question_obj.answers)
+            msg = await interaction.followup.send(embed=embed, view=view)
+            # Waits until user presses a button to continue running
+            await view.wait()
+
+            # Update the embed with the result
+            if view.user_correct:
+                embed_color = discord.Color.green()
+                emote = '✅ '
+            else:
+                embed_color = discord.Color.red()
+                emote = '❌'
+
+            new_embed = discord.Embed(
+                color = embed_color,
+                title = f"Question: {subject}, {chapter}",
+                description = (
+                    f"{question_obj.prompt}\n\n"
+                    + "\n".join(
+                            f"{string.ascii_uppercase[i]}. {choice_text}"
+                            for i, (choice_text, _) in enumerate(question_obj.answers)
+                        )
+                    + f"\n\n {emote} **Explanation:** {question_obj.explanation}" 
+                )
+            )
+
+            await msg.edit(embed=new_embed, view=None)
+
+
+    @app_commands.command(name="question", description="A test question command")
+    @app_commands.describe(subject="Choose a subject")
+    async def question(
+        self, 
+        interaction: discord.Interaction, 
+        subject: str, 
+        #chapter: float | None = None TODO
+    ):
+        """This is the main 'question' command which searches a test
+        in the self.tests memory for a specific test. Each test holds
+        chapters, and those chapters hold reference UUIDs to specific
+        questions."""
+
+        result, error = await self.get_question(subject)       
+
+        if error:
+            await interaction.response.send_message(error)
+            return
+
+        chapter, question_obj = result
+
+        # Final presentation of question
+        embed = discord.Embed(
+            color = discord.Color.blue(),
+            title = f"Question: {subject}, {chapter}",
+            description = (
+                f"{question_obj.prompt}\n\n"
+                + "\n".join(
+                        f"{string.ascii_uppercase[i]}. {choice_text}"
+                        for i, (choice_text, _) in enumerate(question_obj.answers)
+                    )
+            )
+        )
+
+        view = QuizView(question_obj.answers)
+        await interaction.response.send_message(embed=embed, view=view)
+
+        # Waits until user presses a button to continue running
+        await view.wait()
+
+        # Update the embed with the result
+        if view.user_correct:
+            embed_color = discord.Color.green()
+            emote = '✅ '
+        else:
+            embed_color = discord.Color.red()
+            emote = '❌'
+
+        new_embed = discord.Embed(
+            color = embed_color,
+            title = f"Question: {subject}, {chapter}",
+            description = (
+                f"{question_obj.prompt}\n\n"
+                + "\n".join(
+                        f"{string.ascii_uppercase[i]}. {choice_text}"
+                        for i, (choice_text, _) in enumerate(question_obj.answers)
+                    )
+                + f"\n\n {emote} **Explanation:** {question_obj.explanation}" 
+            )
+        )
+
+        await interaction.edit_original_response(embed=new_embed, view=None)
+
+    @question.autocomplete('subject')
+    @exam.autocomplete('subject')
+    async def subject_autocomplete(
+        self,
+        _: discord.Interaction,
+        current: str
+    ) -> list[app_commands.Choice[str]]:
+        """This function is an autocomplete helper for the 'question' command.
+        It searches the currently added tests and presents the user with options."""
+
+        return [
+            app_commands.Choice(name=subject, value=subject)
+            for subject in self.tests if current.lower() in subject.lower()
+        ]
+
+
+class Question():
+    """This class acts as a namespace for a given question."""
+    def __init__(self, prompt: str, type: str, answers: str | list[list[str | bool]], explanation: str):
+        self.prompt = prompt
+        self.type = type
+        self.answers = answers
+        self.explanation = explanation
+
+
+class QuizView(discord.ui.View):
+    """This class builds 4 multiple choice buttons for a question
+    and assigns them with alphabetical labels."""
+    def __init__(self, answers: list[str]):
+        super().__init__()
+        labels = ["A", "B", "C", "D"]
+        self.user_answered = False
+        self.user_correct = False
+
+        # Assigns answers to buttons in format (A, ("answer", bool))
+        for label, (text, is_correct) in zip(labels, answers):
+            self.add_item(QuizButton(label, text, is_correct, self))
+
+class QuizButton(discord.ui.Button):
+    """This class builds each individual button and decides the button's 
+    behavior when it is clicked."""
+    def __init__(self, label: str, answer: str, is_correct: bool, view: QuizView):
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary
+        )
+        self.answer = answer
+        self.is_correct = is_correct
+        self.view_ref = view
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.is_correct:
+            self.view_ref.user_correct = True
+        else:
+            self.view_ref.user_correct = False
+        
+        self.view_ref.stop()
+        self.view_ref.user_answered = True
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Prompter(bot))
